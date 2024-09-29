@@ -79,14 +79,16 @@ float softShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
     return res;
 }
 
-void main() {
+// Get scene color
+vec3 getSceneColor(vec3 p) {
+    if(p.y < 1.001) {
+        float pattern = checkerboard(p.xz * 2.0);
+        return vec3(pattern);
+    }
+    return vec3(0.1, 0.2, 0.3); // Sky color
+}
 
-    Camera camera;
-    camera. uCameraPos = vec3(0.0, 3.0, 5.0);      // Camera position in world space
-    camera. uCameraTarget = vec3(0.0, 1.0, 0.0);   // Point the camera is looking at
-    camera. uCameraUp = vec3(0.0, 1.0, 0.0);       // Up direction for the camera
-    camera. uFOV = 45.0f;           // Field of view in degrees
-    camera. uResolution = vec2(1024, 1024);     // Screen resolution
+vec3 render(Camera camera, vec2 uv) {
 
     // Convert fragment coordinates to NDC (Normalized Device Coordinates)
     vec2 ndc = (fragUV * 2.0) - 1.0;
@@ -128,23 +130,61 @@ void main() {
         float shadow = softShadow(p, lightDir, 0.1, 10.0, 8.0);
 
         vec3 ambient = vec3(0.1);
-    vec3 diffuse, color;
+        vec3 diffuse, color;
 
-    if(p.y < SURFACE_DIST) {
-    // Checkerboard pattern for the plane
-    float pattern = checkerboard(p.xz * 2.0);
-    diffuse = vec3(pattern) * diff;
-    color = ambient + diffuse * shadow;
-    } else {
-    // Pink color for the sphere
-    diffuse = vec3(1.0, 0.4, 0.7) * diff;
-    vec3 specular = vec3(0.3) * spec;
-    color = ambient + (diffuse + specular) * shadow;
-    }
+        if(p.y < 0.001) {
+            float pattern = checkerboard(p.xz * 2.0);
+            diffuse = vec3(pattern) * diff;
+            color = ambient + diffuse * shadow;
+        } else {
+            // Pink color for the sphere
+            vec3 sphereColor = vec3(1.0, 0.4, 0.7);
+            diffuse = sphereColor * diff;
+            vec3 specular = vec3(0.3) * spec;
 
-        outColor = vec4(color, 1.0);
+            // Add reflectance
+            vec3 reflectRay = reflect(rd, normal);
+            float reflectDist = rayMarch(p + normal * 0.01, reflectRay);
+            vec3 reflectP = p + reflectRay * reflectDist;
+            vec3 reflectionColor = getSceneColor(reflectP);
+
+            float reflectivity = 0.1; // Adjust this value to control reflectance strength
+            color = ambient + (diffuse + specular) * shadow + reflectionColor * reflectivity;
+        }
+
+        return color;
     } else {
         // Background color
-        outColor = vec4(0.1, 0.2, 0.3, 1.0);
+        return vec3(0.1, 0.2, 0.3);
     }
+}
+
+void main() {
+
+    Camera camera;
+    camera.uCameraPos = vec3(0.0, 3.0, 5.0);      // Camera position in world space
+    camera.uCameraTarget = vec3(0.0, 1.0, 0.0);   // Point the camera is looking at
+    camera.uCameraUp = vec3(0.0, 1.0, 0.0);       // Up direction for the camera
+    camera.uFOV = 45.0f;           // Field of view in degrees
+    camera.uResolution = vec2(1024, 1024);     // Screen resolution
+
+    vec3 col = vec3(0.0);
+
+    // 2x2 supersampling
+    float dx = 1.0 / camera.uResolution.x;
+    float dy = 1.0 / camera.uResolution.y;
+
+    col += render(camera, fragUV + vec2(-0.25 * dx, -0.25 * dy));
+    col += render(camera, fragUV + vec2(-0.25 * dx,  0.25 * dy));
+    col += render(camera, fragUV + vec2( 0.25 * dx, -0.25 * dy));
+    col += render(camera, fragUV + vec2( 0.25 * dx,  0.25 * dy));
+
+    col /= 4.0; // Average the samples
+
+    // Apply gamma correction
+    float gamma = 2.2;
+    col = pow(col, vec3(gamma));
+
+
+    outColor = vec4(col, 1.0);
 }
