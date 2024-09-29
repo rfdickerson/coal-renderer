@@ -1,15 +1,6 @@
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
-// Specify the descriptor set and binding for the uniform buffer
-//layout(set = 0, binding = 0) uniform Camera {
-//    vec3 uCameraPos;      // Camera position in world space
-//    vec3 uCameraTarget;   // Point the camera is looking at
-//    vec3 uCameraUp;       // Up direction for the camera
-//    float uFOV;           // Field of view in degrees
-//    vec2 uResolution;     // Screen resolution
-//} camera;
-
 struct Camera {
     vec3 uCameraPos;      // Camera position in world space
     vec3 uCameraTarget;   // Point the camera is looking at
@@ -18,14 +9,9 @@ struct Camera {
     vec2 uResolution;     // Screen resolution
 };
 
-
-// Input from vertex shader
 layout(location = 0) in vec2 fragUV;
-
-// Output color
 layout(location = 0) out vec4 outColor;
 
-// Constants
 const int MAX_STEPS = 100;
 const float MAX_DISTANCE = 100.0;
 const float SURFACE_DIST = 0.001;
@@ -35,12 +21,28 @@ float sdfSphere(vec3 p, float radius) {
     return length(p) - radius;
 }
 
+float sdfPlane(vec3 p, vec3 n, float h) {
+    return dot(p, n) + h;
+}
+
+float sceneSDF(vec3 p) {
+    float sphere = sdfSphere(p - vec3(0, 1, 0), 1.0);
+    float plane = sdfPlane(p, vec3(0, 1, 0), 0.0);
+    return min(sphere, plane);
+}
+
+// Checkerboard pattern
+float checkerboard(vec2 p) {
+    vec2 q = floor(p);
+    return mod(q.x + q.y, 2.0);
+}
+
 // Ray marching algorithm
 float rayMarch(vec3 ro, vec3 rd) {
     float distanceTraveled = 0.0;
     for(int i = 0; i < MAX_STEPS; i++) {
         vec3 currentPos = ro + rd * distanceTraveled;
-        float distanceToScene = sdfSphere(currentPos, 1.0);
+        float distanceToScene = sceneSDF(currentPos);
         if(distanceToScene < SURFACE_DIST) {
             return distanceTraveled;
         }
@@ -55,17 +57,33 @@ float rayMarch(vec3 ro, vec3 rd) {
 // Estimate normal at point p using central differences
 vec3 estimateNormal(vec3 p) {
     float eps = 0.0001;
-    float dx = sdfSphere(p + vec3(eps, 0.0, 0.0), 1.0) - sdfSphere(p - vec3(eps, 0.0, 0.0), 1.0);
-    float dy = sdfSphere(p + vec3(0.0, eps, 0.0), 1.0) - sdfSphere(p - vec3(0.0, eps, 0.0), 1.0);
-    float dz = sdfSphere(p + vec3(0.0, 0.0, eps), 1.0) - sdfSphere(p - vec3(0.0, 0.0, eps), 1.0);
-    return normalize(vec3(dx, dy, dz));
+    vec2 e = vec2(eps, 0.0);
+    return normalize(vec3(
+                     sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+                     sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+                     sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+                     ));
+}
+
+// Soft shadows
+float softShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    float t = mint;
+    for(int i = 0; i < 16; i++) {
+        if(t > maxt) break;
+        float h = sceneSDF(ro + rd * t);
+        if(h < 0.001) return 0.0;
+        res = min(res, k * h / t);
+        t += h;
+    }
+    return res;
 }
 
 void main() {
 
     Camera camera;
-    camera. uCameraPos = vec3(0.0,0.0, 5.0);      // Camera position in world space
-    camera. uCameraTarget = vec3(0.0, 0.0, 0.0);   // Point the camera is looking at
+    camera. uCameraPos = vec3(0.0, 3.0, 5.0);      // Camera position in world space
+    camera. uCameraTarget = vec3(0.0, 1.0, 0.0);   // Point the camera is looking at
     camera. uCameraUp = vec3(0.0, 1.0, 0.0);       // Up direction for the camera
     camera. uFOV = 45.0f;           // Field of view in degrees
     camera. uResolution = vec2(1024, 1024);     // Screen resolution
@@ -106,16 +124,27 @@ void main() {
         vec3 reflectDir = reflect(-lightDir, normal);
         float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
 
-        // Ambient, diffuse, and specular colors
-        vec3 ambient = vec3(0.1);
-        vec3 diffuse = vec3(0.6) * diff;
-        vec3 specular = vec3(0.3) * spec;
+        // Shadow calculation
+        float shadow = softShadow(p, lightDir, 0.1, 10.0, 8.0);
 
-        vec3 color = ambient + diffuse + specular;
+        vec3 ambient = vec3(0.1);
+    vec3 diffuse, color;
+
+    if(p.y < SURFACE_DIST) {
+    // Checkerboard pattern for the plane
+    float pattern = checkerboard(p.xz * 2.0);
+    diffuse = vec3(pattern) * diff;
+    color = ambient + diffuse * shadow;
+    } else {
+    // Pink color for the sphere
+    diffuse = vec3(1.0, 0.4, 0.7) * diff;
+    vec3 specular = vec3(0.3) * spec;
+    color = ambient + (diffuse + specular) * shadow;
+    }
 
         outColor = vec4(color, 1.0);
     } else {
         // Background color
-        outColor = vec4(0.0, 0.0, 0.0, 1.0);
+        outColor = vec4(0.1, 0.2, 0.3, 1.0);
     }
 }
