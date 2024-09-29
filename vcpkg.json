@@ -1,0 +1,8 @@
+{
+  "dependencies": [
+    "fmt",
+    "vk-bootstrap",
+    "vulkan",
+    "glfw3"
+  ]
+}
