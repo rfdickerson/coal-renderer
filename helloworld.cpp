@@ -9,7 +9,13 @@
 #include <GLFW/glfw3.h>
 
 #include <VkBootstrap.h>
+#include "vk_mem_alloc.h"
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
+void render_imgui_frame(VkCommandBuffer command_buffer);
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -21,6 +27,7 @@ struct Init {
     vkb::Device device;
     vkb::DispatchTable disp;
     vkb::Swapchain swapchain;
+    VkDescriptorPool descriptor_pool;
 };
 
 struct RenderData {
@@ -44,6 +51,31 @@ struct RenderData {
     std::vector<VkFence> image_in_flight;
     size_t current_frame = 0;
 };
+
+void init_imgui(const Init& init, const RenderData& data) {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForVulkan(init.window, true);
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = init.instance.instance;
+    init_info.PhysicalDevice = init.device.physical_device;
+    init_info.Device = init.device.device;
+    init_info.QueueFamily = init.device.get_queue_index(vkb::QueueType::graphics).value();
+    init_info.Queue = init.device.get_queue(vkb::QueueType::graphics).value();
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = init.descriptor_pool;
+    init_info.Subpass = 0;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = 2;
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.Allocator = VK_NULL_HANDLE;
+    init_info.CheckVkResultFn = nullptr;
+    init_info.RenderPass = data.render_pass;
+    ImGui_ImplVulkan_Init(&init_info);
+    ImGui_ImplVulkan_CreateFontsTexture();
+
+}
 
 GLFWwindow* create_window_glfw(const char* window_name = "", bool resize = true) {
     glfwInit();
@@ -72,6 +104,28 @@ VkSurfaceKHR create_surface_glfw(VkInstance instance, GLFWwindow* window, VkAllo
         surface = VK_NULL_HANDLE;
     }
     return surface;
+}
+
+VmaAllocator create_vma_allocator(Init& init) {
+    VmaVulkanFunctions vulkan_functions = {};
+    vulkan_functions.vkGetInstanceProcAddr = init.inst_disp.fp_vkGetInstanceProcAddr;
+    vulkan_functions.vkGetDeviceProcAddr = init.device.fp_vkGetDeviceProcAddr;
+
+    VmaAllocatorCreateInfo allocator_create_info = {};
+    allocator_create_info.physicalDevice = init.device.physical_device;
+    allocator_create_info.device = init.device.device;
+    allocator_create_info.instance = init.instance.instance;
+    allocator_create_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocator_create_info.pVulkanFunctions = &vulkan_functions;
+
+    VmaAllocator allocator;
+
+    if (vmaCreateAllocator(&allocator_create_info, &allocator) != VK_SUCCESS) {
+        std::cout << "failed to create VMA allocator\n";
+        throw std::runtime_error("failed to create VMA allocator");
+    }
+
+    return allocator;
 }
 
 int device_initialization(Init& init) {
@@ -112,7 +166,14 @@ int device_initialization(Init& init) {
 
 int create_swapchain(Init& init) {
 
+    // set surface format
+    VkSurfaceFormatKHR format = { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+
     vkb::SwapchainBuilder swapchain_builder{ init.device };
+    swapchain_builder
+        .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+    .set_desired_format(format);
+
     auto swap_ret = swapchain_builder.set_old_swapchain(init.swapchain).build();
     if (!swap_ret) {
         std::cout << swap_ret.error().message() << " " << swap_ret.vk_result() << "\n";
@@ -373,12 +434,64 @@ int create_command_pool(Init& init, RenderData& data) {
     VkCommandPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.queueFamilyIndex = init.device.get_queue_index(vkb::QueueType::graphics).value();
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
     if (init.disp.createCommandPool(&pool_info, nullptr, &data.command_pool) != VK_SUCCESS) {
         std::cout << "failed to create command pool\n";
         return -1; // failed to create command pool
     }
     return 0;
+}
+
+void draw(Init& init, RenderData& data, uint32_t image_index)
+{
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    if (init.disp.beginCommandBuffer(data.command_buffers[image_index], &begin_info) != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin recording command buffer!");
+    }
+
+    VkRenderPassBeginInfo render_pass_info = {};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = data.render_pass;
+    render_pass_info.framebuffer = data.framebuffers[image_index];
+    render_pass_info.renderArea.offset = { 0, 0 };
+    render_pass_info.renderArea.extent = init.swapchain.extent;
+    VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
+    render_pass_info.clearValueCount = 1;
+    render_pass_info.pClearValues = &clearColor;
+
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)init.swapchain.extent.width;
+    viewport.height = (float)init.swapchain.extent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor = {};
+    scissor.offset = { 0, 0 };
+    scissor.extent = init.swapchain.extent;
+
+    init.disp.cmdSetViewport(data.command_buffers[image_index], 0, 1, &viewport);
+    init.disp.cmdSetScissor(data.command_buffers[image_index], 0, 1, &scissor);
+
+    init.disp.cmdBeginRenderPass(data.command_buffers[image_index], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    init.disp.cmdBindPipeline(data.command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
+
+    init.disp.cmdDraw(data.command_buffers[image_index], 4, 1, 0, 0);
+
+    // draw GUI
+    render_imgui_frame(data.command_buffers[image_index]);
+
+    init.disp.cmdEndRenderPass(data.command_buffers[image_index]);
+
+    if (init.disp.endCommandBuffer(data.command_buffers[image_index]) != VK_SUCCESS) {
+        std::cout << "failed to record command buffer\n";
+        throw std::runtime_error("failed to record command buffer");
+    }
 }
 
 int create_command_buffers(Init& init, RenderData& data) {
@@ -394,52 +507,6 @@ int create_command_buffers(Init& init, RenderData& data) {
         return -1; // failed to allocate command buffers;
     }
 
-    for (size_t i = 0; i < data.command_buffers.size(); i++) {
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        if (init.disp.beginCommandBuffer(data.command_buffers[i], &begin_info) != VK_SUCCESS) {
-            return -1; // failed to begin recording command buffer
-        }
-
-        VkRenderPassBeginInfo render_pass_info = {};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = data.render_pass;
-        render_pass_info.framebuffer = data.framebuffers[i];
-        render_pass_info.renderArea.offset = { 0, 0 };
-        render_pass_info.renderArea.extent = init.swapchain.extent;
-        VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
-        render_pass_info.clearValueCount = 1;
-        render_pass_info.pClearValues = &clearColor;
-
-        VkViewport viewport = {};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = (float)init.swapchain.extent.width;
-        viewport.height = (float)init.swapchain.extent.height;
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor = {};
-        scissor.offset = { 0, 0 };
-        scissor.extent = init.swapchain.extent;
-
-        init.disp.cmdSetViewport(data.command_buffers[i], 0, 1, &viewport);
-        init.disp.cmdSetScissor(data.command_buffers[i], 0, 1, &scissor);
-
-        init.disp.cmdBeginRenderPass(data.command_buffers[i], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-        init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
-
-        init.disp.cmdDraw(data.command_buffers[i], 4, 1, 0, 0);
-
-        init.disp.cmdEndRenderPass(data.command_buffers[i]);
-
-        if (init.disp.endCommandBuffer(data.command_buffers[i]) != VK_SUCCESS) {
-            std::cout << "failed to record command buffer\n";
-            return -1; // failed to record command buffer!
-        }
-    }
     return 0;
 }
 
@@ -504,6 +571,9 @@ int draw_frame(Init& init, RenderData& data) {
     }
     data.image_in_flight[image_index] = data.in_flight_fences[data.current_frame];
 
+    draw(init, data, image_index);
+
+
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -551,7 +621,17 @@ int draw_frame(Init& init, RenderData& data) {
     return 0;
 }
 
+void cleanup_imgui() {
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+}
+
 void cleanup(Init& init, RenderData& data) {
+
+    // clean up imgui
+    cleanup_imgui();
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         init.disp.destroySemaphore(data.finished_semaphore[i], nullptr);
         init.disp.destroySemaphore(data.available_semaphores[i], nullptr);
@@ -559,6 +639,8 @@ void cleanup(Init& init, RenderData& data) {
     }
 
     init.disp.destroyCommandPool(data.command_pool, nullptr);
+
+    init.disp.destroyDescriptorPool(init.descriptor_pool, nullptr);
 
     for (auto framebuffer : data.framebuffers) {
         init.disp.destroyFramebuffer(framebuffer, nullptr);
@@ -577,6 +659,52 @@ void cleanup(Init& init, RenderData& data) {
     destroy_window_glfw(init.window);
 }
 
+void render_imgui_frame(VkCommandBuffer command_buffer)
+{
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    // Your ImGui code here
+    ImGui::Begin("Hello, world!");
+    ImGui::Text("This is a simple ImGui application.");
+    ImGui::End();
+
+    ImGui::Render();
+
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+}
+
+VkDescriptorPool create_descriptor_pool(const Init& init)
+{
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.maxSets = 1000;
+    VkDescriptorPoolSize pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+    };
+
+    pool_info.poolSizeCount = 11;
+    pool_info.pPoolSizes = pool_sizes;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+
+    init.disp.createDescriptorPool(&pool_info, nullptr, &descriptor_pool);
+
+    return descriptor_pool;
+}
+
 int main() {
     Init init;
     RenderData render_data;
@@ -590,6 +718,11 @@ int main() {
     if (0 != create_command_pool(init, render_data)) return -1;
     if (0 != create_command_buffers(init, render_data)) return -1;
     if (0 != create_sync_objects(init, render_data)) return -1;
+    // create descriptor pool
+    auto descriptor_pool = create_descriptor_pool(init);
+    init.descriptor_pool = descriptor_pool;
+
+    init_imgui(init, render_data);
 
     while (!glfwWindowShouldClose(init.window)) {
         glfwPollEvents();

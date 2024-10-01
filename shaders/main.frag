@@ -12,8 +12,9 @@ const int MAX_STEPS = 100;
 const vec3 lightPos = vec3(2.0, 4.0, -3.0);
 const vec3 cubePos = vec3(0.0, 1.0, 0.0);
 const float outerCubeSize = 1.0;
-const float innerCubeSize = 0.6; // Size of the inner cube to be subtracted
-const vec3 innerCubeOffset = vec3(0.5, 0.5, -0.2); // Offset of the inner cube
+
+// Background wall configuration
+const float wallDistance = -10.0; // Distance of the wall from the origin
 
 // Adjustable Field of View (in degrees)
 const float FOV_DEGREES = 60.0; // You can adjust this value (e.g., 45.0, 90.0)
@@ -32,19 +33,17 @@ float sdBox(vec3 p, vec3 b) {
     return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
 }
 
-// Cube with off-center cut-out SDF
-float sdCubeWithCutout(vec3 p, float outerSize, float innerSize, vec3 innerOffset) {
-    float outer = sdBox(p, vec3(outerSize));
-    float inner = sdBox(p - innerOffset, vec3(innerSize));
-    return max(outer, -inner);
+float sdVerticalPlane(vec3 p, float z) {
+    return p.z - z;
 }
 
 // Scene SDF
 float sceneSDF(vec3 p) {
-    float plane = sdPlane(p);
-//    float cubeWithCutout = sdCubeWithCutout(p - cubePos, outerCubeSize, innerCubeSize, innerCubeOffset);
+    float floor = sdPlane(p);
     float cube = sdBox(p - cubePos, vec3(outerCubeSize));
-    return min(plane, cube);
+    float wall = sdVerticalPlane(p, wallDistance);
+
+    return min(min(floor, cube), wall);
 }
 
 // Normal estimation
@@ -117,7 +116,7 @@ void main() {
     uv.x *= ASPECT_RATIO; // Adjust for aspect ratio
 
     // Camera setup
-    vec3 ro = vec3(5.0, 3.0, -5.0); // Camera origin
+    vec3 ro = vec3(0.0, 5.0, -5.0); // Camera origin
     vec3 target = cubePos;           // Look-at target (box position)
     vec3 upWorld = vec3(0.0, 1.0, 0.0); // World's up vector
 
@@ -150,11 +149,14 @@ void main() {
 
         // Material color
         vec3 color;
-        if (p.y < EPSILON + 0.01) {
-            // Checkerboard for the plane
+        if (abs(p.y) < EPSILON) {
+            // Floor
             color = vec3(checkerboard(p.xz));
+        } else if (abs(p.z - wallDistance) < EPSILON) {
+            // Wall
+            color = vec3(0.8, 0.8, 0.9); // Light blue-gray color for the wall
         } else {
-            // Cube color
+            // Cube
             color = vec3(0.2, 0.4, 0.8);
         }
 

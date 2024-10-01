@@ -3,6 +3,14 @@
     "fmt",
     "vk-bootstrap",
     "vulkan",
-    "glfw3"
+    "glfw3",
+    "vulkan-memory-allocator",
+    {
+      "name": "imgui",
+        "features": [
+            "glfw-binding",
+            "vulkan-binding"
+        ]
+    }
   ]
 }

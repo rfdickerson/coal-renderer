@@ -6,6 +6,8 @@ find_package(Vulkan REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(vk-bootstrap CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
+find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 
 # Find glslc shader compiler
 find_program(GLSLC glslc HINTS Vulkan::glslc)
@@ -23,7 +25,8 @@ function(compile_shader TARGET SHADER)
     target_sources(${TARGET} PRIVATE ${SPIRV})
 endfunction()
 
-add_executable(HelloWorld helloworld.cpp)
+add_executable(HelloWorld helloworld.cpp
+        vmaimpl.cpp)
 
 # Compile shaders
 file(GLOB_RECURSE SHADERS
@@ -44,3 +47,5 @@ add_custom_command(TARGET HelloWorld POST_BUILD
 target_link_libraries(HelloWorld PRIVATE fmt::fmt vk-bootstrap::vk-bootstrap)
 target_link_libraries(HelloWorld PRIVATE Vulkan::Vulkan)
 target_link_libraries(HelloWorld PRIVATE glfw)
+target_link_libraries(HelloWorld PRIVATE GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(HelloWorld PRIVATE imgui::imgui)
